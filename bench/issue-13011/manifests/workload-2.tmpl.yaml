@@ -1,0 +1,60 @@
+# Workload phase 2 — consumers. Applied after phase 1 so that every Service
+# and Middleware referenced here already exists in Traefik's informer cache.
+#
+# Per route this template produces 1× Ingress + 1× TraefikService + 1×
+# IngressRoute. The placeholder __I__ is substituted with 1..N by
+# deploy-workload.sh. The Ingress uses the kubernetes provider; the
+# IngressRoute targets the same Service via the TraefikService and reuses the
+# same three Middlewares as the Ingress, so both providers carry equal load.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ing-__I__
+  namespace: bench-workload
+  annotations:
+    traefik.ingress.kubernetes.io/router.middlewares: bench-workload-mw-__I__-1@kubernetescrd,bench-workload-mw-__I__-2@kubernetescrd,bench-workload-mw-__I__-3@kubernetescrd
+spec:
+  ingressClassName: traefik
+  rules:
+    - host: svc-__I__.bench.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: svc-__I__
+                port:
+                  number: 80
+---
+apiVersion: traefik.io/v1alpha1
+kind: TraefikService
+metadata:
+  name: ts-__I__
+  namespace: bench-workload
+spec:
+  weighted:
+    services:
+      - name: svc-__I__
+        kind: Service
+        port: 80
+        weight: 1
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: ir-__I__
+  namespace: bench-workload
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`ir-__I__.bench.local`)
+      kind: Rule
+      services:
+        - name: ts-__I__
+          kind: TraefikService
+      middlewares:
+        - name: mw-__I__-1
+        - name: mw-__I__-2
+        - name: mw-__I__-3

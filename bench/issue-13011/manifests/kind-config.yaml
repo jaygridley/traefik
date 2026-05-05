@@ -1,0 +1,29 @@
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: traefik-bench
+# 1 control-plane + 20 workers. The high node count is intentional: issue
+# #13011 calls out node-heartbeat churn (kubelet rewrites Node.Status ~every
+# 10s) as one of the regression's hot paths, so more nodes = more events
+# through Traefik's watch loop = stronger signal in the capture.
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker
+  - role: worker

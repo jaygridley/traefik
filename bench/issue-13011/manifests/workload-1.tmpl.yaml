@@ -1,0 +1,53 @@
+# Workload phase 1 — leaves. Applied first by deploy-workload.sh so that
+# Traefik's informer cache contains every referenced Service and Middleware
+# before phase 2 introduces the Ingresses/IngressRoutes that reference them.
+# Without this ordering Traefik logs spurious "middleware/service not found"
+# errors during the deploy.
+#
+# Per route this template produces 1× Service + 3× Middleware. The placeholder
+# __I__ is substituted with 1..N by deploy-workload.sh.
+apiVersion: v1
+kind: Service
+metadata:
+  name: svc-__I__
+  namespace: bench-workload
+spec:
+  selector:
+    app: dummy-backend
+  ports:
+    - name: http
+      port: 80
+      targetPort: 80
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: mw-__I__-1
+  namespace: bench-workload
+spec:
+  headers:
+    customRequestHeaders:
+      X-Bench-Route: "svc-__I__"
+      X-Bench-Tier: "one"
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: mw-__I__-2
+  namespace: bench-workload
+spec:
+  headers:
+    customRequestHeaders:
+      X-Bench-Route: "svc-__I__"
+      X-Bench-Tier: "two"
+---
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: mw-__I__-3
+  namespace: bench-workload
+spec:
+  headers:
+    customRequestHeaders:
+      X-Bench-Route: "svc-__I__"
+      X-Bench-Tier: "three"
