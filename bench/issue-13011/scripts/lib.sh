@@ -14,6 +14,12 @@ export WORKLOAD_NS="${WORKLOAD_NS:-bench-workload}"
 export ROUTE_COUNT="${ROUTE_COUNT:-200}"
 export TRAEFIK_REPLICAS="${TRAEFIK_REPLICAS:-1}"
 
+# Helm install + kubectl rollout wait ceiling. Cold-starting Traefik against
+# the deployed workload (200 Ingresses + 200 IngressRoutes + 600 Middleware
+# refs) routinely needs >3 min before /ping passes the readiness probe —
+# especially on v3.1+ where the CPU regression we're benchmarking is in play.
+export INSTALL_TIMEOUT="${INSTALL_TIMEOUT:-300s}"
+
 # Churn knobs — used by capture-cpu.sh / churn.sh to keep Node and
 # EndpointSlice events flowing during the capture window.
 export CHURN_ENABLE="${CHURN_ENABLE:-0}"

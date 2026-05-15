@@ -31,7 +31,7 @@ The harness:
 7. emits per-version CSVs and a summary table (count, mean, p50, p95, max
    mCPU).
 
-The 11-node setup is intentional: issue #13011 names node-heartbeat churn
+The 21-node setup is intentional: issue #13011 names node-heartbeat churn
 (kubelet rewrites `Node.Status` ~every 10 s) as one of the regression's hot
 paths, so more nodes drive more events through Traefik's watch loop and make
 the regression more visible in the capture.
@@ -50,6 +50,25 @@ These tools must be on `PATH`:
 - `awk` (provided by every base distro / macOS)
 - a working Docker daemon (for kind)
 
+The default run also captures a **locally-built** image as a 4th comparison
+point. Build it first with `make build-image-dirty` from the repo root
+(produces `traefik/traefik:latest`), or set `SKIP_LOCAL_CAPTURE=1` to omit
+that step. `scripts/run.sh` fails fast at the top if the image is missing
+so you don't lose 45+ minutes of capture time.
+
+Before kind-loading, `run.sh` aliases the build artifact as
+`traefik/traefik:$VLOCAL` (default `v3.7.1-dev`; override with `VLOCAL`)
+because the chart's `role.yaml` parses `image.tag` as SemVer and rejects
+`latest`. The alias is refreshed on every run by comparing image IDs, so
+a rebuild via `make build-image-dirty` is picked up automatically.
+
+In local-image mode, `install-traefik.sh` also overrides the chart's image
+fields to `image.registry=localhost` + `image.repository=traefik/traefik`,
+because kind's `ctr images import` (containerd 2.0+ / kind v0.30+) stores
+unqualified refs under `localhost/`, not `docker.io/`. Without the
+override, the pod looks up `docker.io/traefik/traefik:<tag>` and kubelet
+fails with `ErrImageNeverPull` even though the image is on every node.
+
 **Resource cost.** kind runs each node as its own Docker container with
 kubelet/containerd/Kubernetes components — budget ~400–500 MB RAM per node,
 so the 21-node cluster alone needs **≥12 GB** of free RAM and a few GB of
@@ -62,14 +81,22 @@ the scripts hard-code the count.
 ```bash
 cd bench/issue-13011
 
-# Full run (~100 min wall-clock).
+# Full run (~100 min wall-clock). Includes a capture against the
+# locally-built image, so build it first:
+make -C ../.. build-image-dirty
 scripts/run.sh
+
+# Skip the local-image capture (keeps the original 3-version flow).
+SKIP_LOCAL_CAPTURE=1 scripts/run.sh
 
 # Smoke test the harness end-to-end with 8-sample captures (~10 min wall-clock).
 CAPTURE_SAMPLES=8 scripts/run.sh
 
 # Pin specific patch versions instead of auto-resolving "latest 3.1.x" / "latest 3.6.x".
+# The matching Helm chart (whose appVersion equals the image tag) is
+# auto-resolved alongside; override with CHART304/CHART31/CHART36 if needed.
 V31=v3.1.0 V36=v3.6.0 scripts/run.sh
+CHART304=26.0.0 V31=v3.1.0 CHART31=27.0.0 scripts/run.sh
 
 # Tear down when done.
 scripts/teardown.sh
@@ -78,8 +105,13 @@ scripts/teardown.sh
 Results land under `results/` (gitignored):
 
 - `results/v3.0.4.csv`, `results/v3.1.x.csv`, `results/v3.6.x.csv` — raw samples
-  (`timestamp,cpu_m,mem_mi`).
-- `results/summary.txt` — aggregated table.
+  (`timestamp,cpu_m,mem_mi,pod_count`).
+- `results/summary.txt` — aggregated table; two panels, one for CPU
+  (`mean_m / p50_m / p95_m / max_m`) and one for memory (`mean_mi / p50_mi /
+  p95_mi / max_mi`), each with a bar chart and per-version sparkline.
+- `results/{heap,goroutine,allocs,profile}-<label>.pb.gz` — optional pprof
+  snapshots from `scripts/capture-pprof.sh`. See [Memory
+  diagnostics](#memory-diagnostics).
 
 ## Layout
 
@@ -99,6 +131,7 @@ bench/issue-13011/
 │   ├── install-traefik.sh
 │   ├── deploy-workload.sh
 │   ├── capture-cpu.sh
+│   ├── capture-pprof.sh            # optional: heap/goroutine/allocs profiles
 │   ├── churn.sh                    # background Node/EndpointSlice churn
 │   ├── summarize.sh
 │   └── teardown.sh
@@ -112,11 +145,21 @@ Each script is self-contained and idempotent. They can be run independently
 
 ```bash
 scripts/setup-cluster.sh
-scripts/install-traefik.sh v3.0.4
+# install-traefik.sh takes an optional 2nd arg pinning the Helm chart
+# version. Required for older image tags (the latest chart floors at
+# Traefik v3.6.0+). Omit for the locally-built / current image.
+scripts/install-traefik.sh v3.0.4 <chart-version>
 scripts/deploy-workload.sh
 scripts/capture-cpu.sh v3.0.4 120
-scripts/install-traefik.sh v3.1.7
+scripts/install-traefik.sh v3.1.7 <chart-version>
 scripts/capture-cpu.sh v3.1.7 120
+# Install a locally-built image (kind-loads it, pins pullPolicy=Never,
+# overrides image.repository to the two-segment path it was loaded under).
+# `run.sh` aliases the build artifact automatically; standalone callers
+# must tag manually so the SemVer tag is present in the Docker daemon.
+docker tag traefik/traefik:latest traefik/traefik:v3.7.1-dev
+TRAEFIK_LOCAL_IMAGE=1 scripts/install-traefik.sh v3.7.1-dev
+scripts/capture-cpu.sh v3.7.1-dev 120
 scripts/summarize.sh
 ```
 
@@ -161,11 +204,11 @@ replicas, and `bench-churn` labels are stripped from all nodes.
 
 ## What you should see
 
-Per the issue, v3.0.4 should show a noticeably lower mean / p95 than v3.1.x
-and v3.6.x on this workload (200 Ingresses × 3 Middlewares = 600 Middleware
-references; 200 Services ⇒ 200 EndpointSlices). The harness produces the
-exact numbers, but the **shape** of the result is what matters: a clear gap
-between v3.0.4 and the post-3.1 versions.
+Per the issue, v3.0.4 should show a noticeably lower mean / p95 CPU than
+v3.1.x and v3.6.x on this workload (200 Ingresses × 3 Middlewares = 600
+Middleware references; 200 Services ⇒ 200 EndpointSlices). The harness
+produces the exact numbers, but the **shape** of the result is what matters:
+a clear CPU gap between v3.0.4 and the post-3.1 versions.
 
 Any pre-existing CSVs/`summary.txt` captured before the churn loop was
 added are not directly comparable to fresh runs — re-capture from a clean
@@ -187,3 +230,7 @@ Override via env vars (see `scripts/lib.sh`):
 | `CHURN_NODE_INTERVAL`  | `15`             | seconds between Node label flips              |
 | `CHURN_EPS_INTERVAL`   | `30`             | seconds between dummy-backend scale flips     |
 | `V304` / `V31` / `V36` | autodetect       | Traefik image tags to install                 |
+| `CHART304` / `CHART31` / `CHART36` | autodetect | Helm chart version per image tag (matched on `appVersion`) |
+| `VLOCAL`               | `v3.7.0-dev`     | SemVer alias for the locally-built `traefik/traefik:latest` image (loaded into kind as `traefik/traefik:$VLOCAL`; the chart's `role.yaml` rejects non-SemVer tags) |
+| `SKIP_LOCAL_CAPTURE`   | (unset)          | Set to `1` to skip the locally-built image capture |
+| `INSTALL_TIMEOUT`      | `300s`           | Helm `--wait` / `kubectl rollout` ceiling per install (cold-starting Traefik against the deployed workload routinely needs >3 min) |
